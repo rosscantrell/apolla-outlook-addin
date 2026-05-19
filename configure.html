@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <title>Apolla Capture — Configure</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      color: #1E2D4D;
+      padding: 16px;
+      margin: 0;
+    }
+    h1 {
+      font-size: 16px;
+      margin: 0 0 4px 0;
+    }
+    .subtitle {
+      color: #6B7280;
+      font-size: 12px;
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-top: 12px;
+      margin-bottom: 4px;
+    }
+    .hint {
+      color: #6B7280;
+      font-size: 11px;
+      margin-top: 2px;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border: 1px solid #D1D5DB;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    input:focus { outline: 2px solid #2563EB; outline-offset: -1px; border-color: #2563EB; }
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    button {
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid #D1D5DB;
+      background: #FFFFFF;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    button:hover { background: #F9FAFB; }
+    button.primary {
+      background: #2563EB;
+      color: #FFFFFF;
+      border-color: #2563EB;
+    }
+    button.primary:hover { background: #1D4ED8; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status {
+      margin-top: 12px;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+    }
+    .status.ok { background: #D1FAE5; color: #065F46; display: block; }
+    .status.warn { background: #FEF3C7; color: #92400E; display: block; }
+    .status.err { background: #FEE2E2; color: #991B1B; display: block; }
+  </style>
+</head>
+<body>
+  <h1>Apolla Capture — Configure</h1>
+  <div class="subtitle">
+    Set your Apolla server URL and bearer token. Stored per-user via Office roaming settings (encrypted, cloud-synced across Outlook installs).
+  </div>
+
+  <label for="apollaBaseUrl">Apolla base URL</label>
+  <input type="text" id="apollaBaseUrl" placeholder="http://localhost:3001" value=""/>
+  <div class="hint">e.g. <code>http://localhost:3001</code> for local-dev pilots, or <code>https://api.apolla.viktora.ai</code> for production.</div>
+
+  <label for="apollaToken">Bearer token</label>
+  <input type="password" id="apollaToken" placeholder="paste your INGESTION_API_KEY here" value=""/>
+  <div class="hint">Same value as <code>INGESTION_API_KEY</code> on the Apolla server.</div>
+
+  <div class="row">
+    <button id="testBtn">Test connection</button>
+    <button id="saveBtn" class="primary">Save</button>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var $base = document.getElementById('apollaBaseUrl');
+      var $token = document.getElementById('apollaToken');
+      var $test = document.getElementById('testBtn');
+      var $save = document.getElementById('saveBtn');
+      var $status = document.getElementById('status');
+
+      function showStatus(klass, msg) {
+        $status.className = 'status ' + klass;
+        $status.textContent = msg;
+      }
+
+      function clearStatus() {
+        $status.className = 'status';
+        $status.textContent = '';
+      }
+
+      // Load existing settings on open
+      Office.onReady(function () {
+        var existingBase = Office.context.roamingSettings.get('apollaBaseUrl') || '';
+        var existingToken = Office.context.roamingSettings.get('apollaToken') || '';
+        if (existingBase) $base.value = existingBase;
+        if (existingToken) $token.value = existingToken;
+      });
+
+      // P-ADDIN-03 health check
+      $test.addEventListener('click', function () {
+        var baseUrl = ($base.value || '').trim().replace(/\/+$/, '');
+        if (!baseUrl) {
+          showStatus('warn', 'Enter a base URL first.');
+          return;
+        }
+        clearStatus();
+        $test.disabled = true;
+        $test.textContent = 'Testing…';
+
+        fetch(baseUrl + '/api/health', { method: 'GET', mode: 'cors' })
+          .then(function (resp) {
+            if (resp.ok) {
+              showStatus('ok', 'Apolla server reachable at ' + baseUrl);
+            } else {
+              showStatus('warn', 'Reachable but returned HTTP ' + resp.status + '. The Add-in may still work; verify the URL.');
+            }
+          })
+          .catch(function (err) {
+            var msg = (err && err.message) || String(err);
+            if (msg.indexOf('Failed to fetch') >= 0 || msg.indexOf('NetworkError') >= 0) {
+              showStatus('err', 'Cannot reach ' + baseUrl + '. Server down, wrong URL, or CORS not configured (server needs ALLOWED_WEB_ORIGINS set per D-ADDIN-15).');
+            } else {
+              showStatus('err', 'Test failed: ' + msg);
+            }
+          })
+          .finally(function () {
+            $test.disabled = false;
+            $test.textContent = 'Test connection';
+          });
+      });
+
+      $save.addEventListener('click', function () {
+        var baseUrl = ($base.value || '').trim().replace(/\/+$/, '');
+        var token = ($token.value || '').trim();
+
+        if (!baseUrl) {
+          showStatus('err', 'Base URL is required.');
+          return;
+        }
+        if (!token) {
+          showStatus('err', 'Bearer token is required.');
+          return;
+        }
+
+        Office.context.roamingSettings.set('apollaBaseUrl', baseUrl);
+        Office.context.roamingSettings.set('apollaToken', token);
+
+        $save.disabled = true;
+        $save.textContent = 'Saving…';
+
+        Office.context.roamingSettings.saveAsync(function (result) {
+          $save.disabled = false;
+          $save.textContent = 'Save';
+          if (result.status === Office.AsyncResultStatus.Succeeded) {
+            showStatus('ok', 'Saved. You can now click Capture on any email.');
+          } else {
+            showStatus('err', 'Save failed: ' + (result.error && result.error.message));
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <title>Apolla Capture — functions</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+</head>
+<body>
+<!--
+  Apolla Outlook Add-in — capture handler.
+  WP-OCR-05 (FN-OCR-15) productization. Reads the open email, computes a
+  deterministic documentId, and POSTs to /api/ingest-document with bearer auth.
+
+  Locked decisions (see WP-OCR-05 v1.2-FINAL brief):
+    D-ADDIN-02  sourceMetadata.captureMethod = 'outlook-addin'
+    D-ADDIN-03  sourceMetadata.sourceApp     = 'com.microsoft.outlook'
+    D-ADDIN-04  bearer token stored in Office.context.roamingSettings
+    D-ADDIN-05  documentId = 'EMAIL-' + first 16 hex chars of SHA-256(normalize(body))
+    D-ADDIN-06  title = item.subject (NOT first-line-of-body)
+    D-ADDIN-07  content = plain text only (Office.CoercionType.Text)
+    D-ADDIN-08  attachments captured as metadata only (no file bodies)
+    D-ADDIN-09  recipients = to + cc; bcc deliberately NOT captured
+    D-ADDIN-11  if token unset, opens Configure pane instead of failing 401
+-->
+<script>
+(function () {
+  'use strict';
+
+  // ── Storage helpers (D-ADDIN-04 roamingSettings) ──
+
+  function getApollaToken() {
+    return Office.context.roamingSettings.get('apollaToken') || '';
+  }
+  function getApollaBaseUrl() {
+    return Office.context.roamingSettings.get('apollaBaseUrl') || 'http://localhost:3001';
+  }
+
+  // ── ID derivation (D-ADDIN-05) ──
+
+  function normalizeForId(text) {
+    // Lowercase + collapse all whitespace to a single space + strip.
+    // Mirrors ocr-capture's metadata.normalize_for_id.
+    return text.toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  async function sha256Hex16(text) {
+    const buf = new TextEncoder().encode(text);
+    const hash = await crypto.subtle.digest('SHA-256', buf);
+    const hex = Array.from(new Uint8Array(hash))
+      .map(function (b) { return b.toString(16).padStart(2, '0'); })
+      .join('');
+    return hex.slice(0, 16);
+  }
+
+  // ── Title derivation (D-ADDIN-06) ──
+
+  function deriveTitle(subject) {
+    var s = (subject || '').trim();
+    if (!s) return '(no subject)';
+    return s.length > 80 ? s.slice(0, 80) : s;
+  }
+
+  // ── Recipient extraction (D-ADDIN-09: to + cc, NOT bcc) ──
+
+  function emailRecipientsToList(recipients) {
+    // EmailAddressDetails[] → string[] of display addresses, "Name <email>" form when name present.
+    if (!recipients || !recipients.length) return [];
+    return recipients.map(function (r) {
+      var addr = r.emailAddress || '';
+      var name = r.displayName || '';
+      return name ? (name + ' <' + addr + '>') : addr;
+    });
+  }
+
+  function emailFromAddress(from) {
+    if (!from) return '';
+    var addr = from.emailAddress || '';
+    var name = from.displayName || '';
+    return name ? (name + ' <' + addr + '>') : addr;
+  }
+
+  // ── Attachment metadata (D-ADDIN-08: metadata only, no file bodies) ──
+
+  function attachmentMetadata(attachments) {
+    if (!attachments || !attachments.length) return [];
+    return attachments.map(function (a) {
+      return {
+        name: a.name || '',
+        contentType: a.contentType || '',
+        size: a.size || 0,
+        attachmentType: a.attachmentType || ''
+      };
+    });
+  }
+
+  // ── User-visible notification helper ──
+
+  function showNotification(item, key, message, type) {
+    var notifType = type || Office.MailboxEnums.ItemNotificationMessageType.InformationalMessage;
+    item.notificationMessages.replaceAsync(key, {
+      type: notifType,
+      message: String(message).slice(0, 150),  // Outlook caps around 150 chars
+      icon: 'icon16',
+      persistent: false
+    }, function () { /* no-op */ });
+  }
+
+  // ── Main capture handler ──
+
+  function captureEmail(event) {
+    var item = Office.context.mailbox.item;
+
+    // D-ADDIN-11: token check FIRST; if unset, prompt operator to Configure.
+    var token = getApollaToken();
+    if (!token) {
+      showNotification(
+        item,
+        'apolla-config-needed',
+        'Apolla not configured — click the Configure button to set your token.',
+        Office.MailboxEnums.ItemNotificationMessageType.ErrorMessage
+      );
+      event.completed();
+      return;
+    }
+
+    var baseUrl = getApollaBaseUrl();
+
+    // Synchronous metadata reads
+    var subject = deriveTitle(item.subject);
+    var fromAddr = emailFromAddress(item.from);
+    var toList = emailRecipientsToList(item.to);
+    var ccList = emailRecipientsToList(item.cc);
+    var dateTimeCreated = item.dateTimeCreated ? item.dateTimeCreated.toISOString() : null;
+    var internetMessageId = item.internetMessageId || '';
+    var attachments = attachmentMetadata(item.attachments);
+
+    // Async: get the plain-text body
+    item.body.getAsync(Office.CoercionType.Text, function (bodyResult) {
+      if (bodyResult.status !== Office.AsyncResultStatus.Succeeded) {
+        showNotification(
+          item,
+          'apolla-result',
+          'Email body unavailable — try refreshing the message',
+          Office.MailboxEnums.ItemNotificationMessageType.ErrorMessage
+        );
+        event.completed();
+        return;
+      }
+
+      var bodyText = (bodyResult.value || '').trim();
+      if (!bodyText) {
+        showNotification(
+          item,
+          'apolla-result',
+          'Email body is empty — nothing to capture',
+          Office.MailboxEnums.ItemNotificationMessageType.ErrorMessage
+        );
+        event.completed();
+        return;
+      }
+
+      // Derive documentId (D-ADDIN-05)
+      sha256Hex16(normalizeForId(bodyText)).then(function (hex) {
+        var documentId = 'EMAIL-' + hex;
+
+        // Assemble sourceMetadata (D-ADDIN-02/03/08/09)
+        var sourceMetadata = {
+          captureMethod: 'outlook-addin',
+          sourceApp: 'com.microsoft.outlook',
+          url: internetMessageId,
+          capturedAt: new Date().toISOString(),
+          from: fromAddr,
+          to: toList,
+          cc: ccList,
+          dateTimeCreated: dateTimeCreated,
+          attachments: attachments
+        };
+
+        // Assemble payload (IngestDocumentParams shape)
+        var payload = {
+          documentId: documentId,
+          title: subject,
+          content: bodyText,
+          sourceMetadata: sourceMetadata
+        };
+
+        // POST
+        fetch(baseUrl + '/api/ingest-document', {
+          method: 'POST',
+          mode: 'cors',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify(payload)
+        }).then(function (resp) {
+          if (resp.status === 401) {
+            showNotification(
+              item,
+              'apolla-result',
+              'Apolla auth failed — re-run Configure to update token',
+              Office.MailboxEnums.ItemNotificationMessageType.ErrorMessage
+            );
+            event.completed();
+            return;
+          }
+          if (!resp.ok) {
+            showNotification(
+              item,
+              'apolla-result',
+              'Apolla returned HTTP ' + resp.status + ' — see browser console for details',
+              Office.MailboxEnums.ItemNotificationMessageType.ErrorMessage
+            );
+            event.completed();
+            return;
+          }
+          resp.json().then(function (body) {
+            var terms = (body.termsExtracted && body.termsExtracted.length) || 0;
+            var alreadyExisted = !!body.alreadyExisted;
+            var prefix = alreadyExisted ? 'Already captured: ' : 'Captured: ';
+            showNotification(
+              item,
+              'apolla-result',
+              prefix + subject.slice(0, 60) + ' | terms: ' + terms,
+              Office.MailboxEnums.ItemNotificationMessageType.InformationalMessage
+            );
+            event.completed();
+          }).catch(function () {
+            // Response was OK but body parse failed — still report success
+            showNotification(
+              item,
+              'apolla-result',
+              'Captured: ' + subject.slice(0, 60),
+              Office.MailboxEnums.ItemNotificationMessageType.InformationalMessage
+            );
+            event.completed();
+          });
+        }).catch(function (err) {
+          // Network / CORS / connection error
+          var msg = (err && err.message) || String(err);
+          if (msg.indexOf('Failed to fetch') >= 0 || msg.indexOf('NetworkError') >= 0) {
+            showNotification(
+              item,
+              'apolla-result',
+              'Apolla server unreachable at ' + baseUrl,
+              Office.MailboxEnums.ItemNotificationMessageType.ErrorMessage
+            );
+          } else {
+            showNotification(
+              item,
+              'apolla-result',
+              'Capture failed: ' + msg,
+              Office.MailboxEnums.ItemNotificationMessageType.ErrorMessage
+            );
+          }
+          event.completed();
+        });
+      });
+    });
+  }
+
+  // Office.actions.associate must be registered after Office.onReady
+  Office.onReady(function () {
+    Office.actions.associate('captureEmail', captureEmail);
+  });
+})();
+</script>
+</body>
+</html>

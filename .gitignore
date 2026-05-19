@@ -1,0 +1,12 @@
+# macOS metadata
+.DS_Store
+
+# Editor caches
+.vscode/
+.idea/
+*.swp
+*~
+
+# Office Add-in dev artifacts (if anyone runs the npm-based office-addin-* tooling locally)
+node_modules/
+*.log
