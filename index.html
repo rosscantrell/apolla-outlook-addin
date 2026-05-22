@@ -15,6 +15,14 @@
       --ok-bg: #D1FAE5;
     }
     * { box-sizing: border-box; }
+    /* Force white background regardless of OS dark mode — without this,
+       browser-default dark backgrounds in dark mode render the navy
+       --ink body text unreadable. Same lesson the schema-browser SPA
+       carries: declare color + background as a pair in stylesheet rules
+       (not inline) so dark-mode inversion engines respect them. */
+    html, body {
+      background: #FFFFFF;
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
       color: var(--ink);
@@ -100,7 +108,7 @@
 <body>
   <h1>Apolla Capture for Outlook</h1>
   <p class="lede">
-    Capture any open email into your Viktora Apolla corpus with one ribbon-button click. Works on Outlook for Mac and Outlook for Windows (any account type, including Gmail-OAuth-connected personal Outlook).
+    Capture any open email into your Viktora Apolla corpus with one ribbon-button click. Works on Outlook for Mac and Outlook for Windows.
   </p>
 
   <!-- WP-OCR-09 Phase D — tenant-aware install CTA. When the landing
@@ -139,7 +147,6 @@
   <ol>
     <li>
       Open Outlook. Open any email (the ribbon needs an open message to show the install path).
-      <div class="step-detail">If you're on Outlook for Mac with a Gmail-OAuth account, this works the same — verified empirically during WP-OCR-01 Phase E.</div>
     </li>
     <li>
       In the email's toolbar, click <strong>Get Add-ins</strong> (or "Add-ins" → "Get Add-ins" depending on Outlook version).
