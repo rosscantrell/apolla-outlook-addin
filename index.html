@@ -15,6 +15,14 @@
       --ok-bg: #D1FAE5;
     }
     * { box-sizing: border-box; }
+    /* Force white background regardless of OS dark mode — without this,
+       browser-default dark backgrounds in dark mode render the navy
+       --ink body text unreadable. Same lesson the schema-browser SPA
+       carries: declare color + background as a pair in stylesheet rules
+       (not inline) so dark-mode inversion engines respect them. */
+    html, body {
+      background: #FFFFFF;
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
       color: var(--ink);
@@ -100,8 +108,30 @@
 <body>
   <h1>Apolla Capture for Outlook</h1>
   <p class="lede">
-    Capture any open email into your Viktora Apolla corpus with one ribbon-button click. Works on Outlook for Mac and Outlook for Windows (any account type, including Gmail-OAuth-connected personal Outlook).
+    Capture any open email into your Viktora Apolla corpus with one ribbon-button click. Works on Outlook for Mac and Outlook for Windows.
   </p>
+
+  <!-- WP-OCR-09 Phase D — tenant-aware install CTA. When the landing
+       page is opened with ?tenant=<pilot>, surface a banner directing
+       the user to their tenant's Onboarding nav surface (where they
+       can issue a per-user token and get a fully-formed manifest URL
+       with the token baked in). The static manifest URL below stays
+       as the DIY / no-tenant install path. -->
+  <div id="tenantBanner" style="display:none; background:#E0F4F7; border-left:3px solid #1A7A8A; padding:14px 16px; border-radius:4px; margin:16px 0;">
+    <div style="font-size:13px; color:#0F5560;">
+      <strong>You're installing for the <span id="tenantName"></span> Apolla tenant.</strong>
+      For the fastest install (token pre-filled), sign in at your tenant and use the
+      <strong>Onboarding</strong> nav surface:
+    </div>
+    <p style="margin:8px 0 0;">
+      <a id="tenantOnboardingLink" href="#" style="font-weight:500; color:#1A7A8A; text-decoration:none; border-bottom:1px solid #1A7A8A;">
+        Open the Onboarding surface →
+      </a>
+    </p>
+    <p style="margin:8px 0 0; font-size:12px; color:#6B7280;">
+      Or follow the DIY install below — you'll paste your bearer token manually in Step 2.
+    </p>
+  </div>
 
   <h2>Install (5 minutes)</h2>
 
@@ -117,7 +147,6 @@
   <ol>
     <li>
       Open Outlook. Open any email (the ribbon needs an open message to show the install path).
-      <div class="step-detail">If you're on Outlook for Mac with a Gmail-OAuth account, this works the same — verified empirically during WP-OCR-01 Phase E.</div>
     </li>
     <li>
       In the email's toolbar, click <strong>Get Add-ins</strong> (or "Add-ins" → "Get Add-ins" depending on Outlook version).
@@ -205,6 +234,38 @@
         }, 2000);
       });
     }
+
+    // WP-OCR-09 Phase D — tenant propagation. When this landing page
+    // is opened with `?tenant=<pilot>` (e.g., from a forwarded Slack
+    // message or a marketing email), surface a banner directing the
+    // user at the tenant's Onboarding nav surface — that's where they
+    // can issue a per-user token and copy the FULLY-FORMED manifest
+    // URL with the token baked in. The static github.io manifest below
+    // stays as the DIY / no-tenant install path.
+    //
+    // Per Q4 Path 4A finding: the Outlook Add-in manifest spec does
+    // NOT support templated query params in SourceLocation. The
+    // per-tenant pre-fill is achieved by the droplet hosting a dynamic
+    // /outlook-manifest.xml route — this landing page just nudges the
+    // user toward it when a tenant slug is in the URL.
+    (function () {
+      try {
+        var params = new URLSearchParams(window.location.search);
+        var tenant = params.get('tenant');
+        if (!tenant) return;
+        var safeTenant = String(tenant).replace(/[^A-Za-z0-9_-]/g, '');
+        if (!safeTenant) return;
+        var nameEl = document.getElementById('tenantName');
+        var linkEl = document.getElementById('tenantOnboardingLink');
+        var banner = document.getElementById('tenantBanner');
+        if (nameEl) nameEl.textContent = safeTenant;
+        if (linkEl) linkEl.href = 'https://' + safeTenant + '.viktora.ai/onboarding';
+        if (banner) banner.style.display = 'block';
+      } catch (_e) {
+        // URLSearchParams unsupported on ancient browsers — degrade
+        // gracefully, banner stays hidden, DIY install still works.
+      }
+    })();
   </script>
 </body>
 </html>

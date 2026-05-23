@@ -82,13 +82,21 @@
     Set your Apolla server URL and bearer token. Stored per-user via Office roaming settings (encrypted, cloud-synced across Outlook installs).
   </div>
 
+  <!-- WP-OCR-09 Phase D — pre-fill hint banner. Shown only when the
+       page was opened via a droplet-hosted manifest URL carrying
+       ?tenant + ?token query params. Hidden by default; the bootstrap
+       script reveals + populates it when params are detected. -->
+  <div id="prefillHint" class="status ok" style="display:none; margin-top:0; margin-bottom:12px;">
+    <strong>Pre-filled from your Apolla tenant.</strong> Click <strong>Test connection</strong> to verify, then <strong>Save</strong>.
+  </div>
+
   <label for="apollaBaseUrl">Apolla base URL</label>
   <input type="text" id="apollaBaseUrl" placeholder="http://localhost:3001" value=""/>
-  <div class="hint">e.g. <code>http://localhost:3001</code> for local-dev pilots, or <code>https://api.apolla.viktora.ai</code> for production.</div>
+  <div class="hint">e.g. <code>http://localhost:3001</code> for local-dev pilots, or <code>https://&lt;pilot&gt;.viktora.ai</code> for a hosted Apolla droplet.</div>
 
   <label for="apollaToken">Bearer token</label>
   <input type="password" id="apollaToken" placeholder="paste your INGESTION_API_KEY here" value=""/>
-  <div class="hint">Same value as <code>INGESTION_API_KEY</code> on the Apolla server.</div>
+  <div class="hint">Same value as <code>INGESTION_API_KEY</code> on the Apolla server, OR your per-user <code>addinToken</code> from the Apolla Onboarding nav surface.</div>
 
   <div class="row">
     <button id="testBtn">Test connection</button>
@@ -117,13 +125,85 @@
         $status.textContent = '';
       }
 
+      // WP-OCR-09 Phase D — query-param pre-fill from a droplet-hosted
+      // manifest URL. The droplet's GET /outlook-manifest.xml?token=...
+      // route emits a manifest whose configurePane URL is
+      //   https://rosscantrell.github.io/apolla-outlook-addin/configure.html?tenant=<pilot>&token=<apolla_...>
+      // so when Outlook opens the Configure pane it loads this page WITH
+      // the query string. We parse + pre-fill BEFORE Office.onReady so
+      // newly-sideloaded users see populated fields immediately; the
+      // Office.onReady callback then only overwrites with roamingSettings
+      // if the user has previously saved a different config (operator
+      // re-pre-fill should not clobber a working config silently).
+      var prefillFromUrl = (function () {
+        try {
+          var params = new URLSearchParams(window.location.search);
+          var tenant = params.get('tenant');
+          var token = params.get('token');
+          // tenant may be missing (legacy install path); token is the
+          // load-bearing param. Reconstruct baseUrl from tenant slug iff
+          // both present; just-token still pre-fills the token field.
+          var baseUrl = tenant ? ('https://' + tenant + '.viktora.ai') : null;
+          if (!token && !baseUrl) return null;
+          return { baseUrl: baseUrl, token: token, tenant: tenant };
+        } catch (_e) {
+          // URLSearchParams unsupported on ancient Outlook builds — skip
+          // pre-fill but don't crash; user falls back to manual config.
+          return null;
+        }
+      })();
+
       // Load existing settings on open
       Office.onReady(function () {
         var existingBase = Office.context.roamingSettings.get('apollaBaseUrl') || '';
         var existingToken = Office.context.roamingSettings.get('apollaToken') || '';
-        if (existingBase) $base.value = existingBase;
-        if (existingToken) $token.value = existingToken;
+
+        // Precedence: existing saved settings ALWAYS win when present
+        // (the user explicitly Saved them). URL-param pre-fill ONLY
+        // applies to first-time installs (no saved settings yet).
+        if (existingBase) {
+          $base.value = existingBase;
+        } else if (prefillFromUrl && prefillFromUrl.baseUrl) {
+          $base.value = prefillFromUrl.baseUrl;
+        }
+        if (existingToken) {
+          $token.value = existingToken;
+        } else if (prefillFromUrl && prefillFromUrl.token) {
+          $token.value = prefillFromUrl.token;
+        }
+
+        // Reveal the pre-fill hint banner iff we actually pre-filled
+        // from URL params AND nothing was already saved (avoid showing
+        // it to returning users who happened to re-open Configure from
+        // a freshly-loaded manifest copy).
+        var didPrefill =
+          prefillFromUrl &&
+          ((prefillFromUrl.baseUrl && !existingBase) || (prefillFromUrl.token && !existingToken));
+        if (didPrefill) {
+          var hint = document.getElementById('prefillHint');
+          if (hint) {
+            if (prefillFromUrl.tenant) {
+              hint.innerHTML =
+                '<strong>Pre-filled from Apolla tenant ' +
+                escapeHtml(prefillFromUrl.tenant) +
+                '.</strong> Click <strong>Test connection</strong> to verify, then <strong>Save</strong>.';
+            }
+            hint.style.display = 'block';
+          }
+        }
       });
+
+      // Minimal HTML escaper for the tenant name in the hint banner —
+      // tenant slugs are operator-set and trusted but we still escape
+      // defensively (matches sideloaded-from-malicious-URL threat model).
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
 
       // P-ADDIN-03 health check
       $test.addEventListener('click', function () {
