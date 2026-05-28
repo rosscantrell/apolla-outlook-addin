@@ -93,6 +93,42 @@
     });
   }
 
+  // ── Lifecycle event reporting (WP-Onboarding-One-Click v1.1 P2-8) ──
+  //
+  // Best-effort fire-and-forget. Failures are silent (no UX impact;
+  // these events are diagnostic-only). Bearer token is the same one
+  // the capture POST uses, so server-side rejection happens only if
+  // the user is misconfigured — in which case the capture itself will
+  // also surface the error.
+
+  function reportLifecycleEvent(eventType, baseUrl, token, extra) {
+    try {
+      if (!baseUrl || !token) return;
+      var body = {
+        eventType: eventType,
+        surface: 'capture',
+        ts: new Date().toISOString()
+      };
+      if (extra && typeof extra === 'object') {
+        for (var k in extra) {
+          if (Object.prototype.hasOwnProperty.call(extra, k)) {
+            body[k] = extra[k];
+          }
+        }
+      }
+      fetch(baseUrl.replace(/\/+$/, '') + '/api/auth/addin-lifecycle-event', {
+        method: 'POST',
+        mode: 'cors',
+        keepalive: true,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token
+        },
+        body: JSON.stringify(body)
+      }).catch(function () { /* silent */ });
+    } catch (_e) { /* silent */ }
+  }
+
   // ── User-visible notification helper ──
 
   function showNotification(item, key, message, type) {
@@ -101,7 +137,15 @@
       type: notifType,
       message: String(message).slice(0, 150),  // Outlook caps around 150 chars
       icon: 'icon16',
-      persistent: false
+      // WP-Onboarding-One-Click v1.1 — persistent:true so capture-success
+      // confirmation stays visible until the user dismisses or navigates
+      // away. The default (persistent:false) auto-dismisses after a few
+      // seconds, which empirically tested as "silent" for pilot user Trisha
+      // 2026-05-27 (she captured emails successfully but never saw the
+      // confirmation bar; the data flow worked but UX was confusingly
+      // quiet). Error messages with type=ErrorMessage are automatically
+      // persistent regardless of this setting per Office API spec.
+      persistent: true
     }, function () { /* no-op */ });
   }
 
@@ -124,6 +168,9 @@
     }
 
     var baseUrl = getApollaBaseUrl();
+
+    // Best-effort capture_attempted event (P2-8).
+    reportLifecycleEvent('capture_attempted', baseUrl, token);
 
     // Synchronous metadata reads
     var subject = deriveTitle(item.subject);
@@ -195,6 +242,7 @@
           body: JSON.stringify(payload)
         }).then(function (resp) {
           if (resp.status === 401) {
+            reportLifecycleEvent('capture_failed', baseUrl, token, { reason: 'auth_failed', status: 401 });
             showNotification(
               item,
               'apolla-result',
@@ -205,6 +253,7 @@
             return;
           }
           if (!resp.ok) {
+            reportLifecycleEvent('capture_failed', baseUrl, token, { reason: 'http_error', status: resp.status });
             showNotification(
               item,
               'apolla-result',
@@ -218,6 +267,7 @@
             var terms = (body.termsExtracted && body.termsExtracted.length) || 0;
             var alreadyExisted = !!body.alreadyExisted;
             var prefix = alreadyExisted ? 'Already captured: ' : 'Captured: ';
+            reportLifecycleEvent('capture_succeeded', baseUrl, token, { alreadyExisted: alreadyExisted });
             showNotification(
               item,
               'apolla-result',
@@ -227,6 +277,7 @@
             event.completed();
           }).catch(function () {
             // Response was OK but body parse failed — still report success
+            reportLifecycleEvent('capture_succeeded', baseUrl, token, { parseError: true });
             showNotification(
               item,
               'apolla-result',
@@ -238,6 +289,10 @@
         }).catch(function (err) {
           // Network / CORS / connection error
           var msg = (err && err.message) || String(err);
+          // Best-effort lifecycle reporting on network failure — likely
+          // this also fails for the same network reason, but keepalive
+          // gives it a chance and it costs nothing.
+          reportLifecycleEvent('capture_failed', baseUrl, token, { reason: 'network', message: msg.slice(0, 200) });
           if (msg.indexOf('Failed to fetch') >= 0 || msg.indexOf('NetworkError') >= 0) {
             showNotification(
               item,
