@@ -59,6 +59,27 @@ Pilot users: see [PILOT-INSTALL.md](PILOT-INSTALL.md) or the friendlier HTML ver
 
 ---
 
+## URL-param pre-fill contract (WP-Onboarding-One-Click v1.1)
+
+`configure.html` accepts two query-string parameters when opened from a droplet-hosted manifest URL:
+
+| Param   | Source                                          | Behavior                                                                                                              |
+|---------|-------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| `tenant` | The droplet hostname's leading label (e.g., `threshold-eval` from `threshold-eval.viktora.ai`) | Reconstructs `apollaBaseUrl` as `https://<tenant>.viktora.ai` and is rendered in the green "Connected ✓" hint banner. |
+| `token`  | The per-user `addinToken` minted by `POST /api/auth/issue-addin-token` on the schema-browser  | Pre-fills `apollaToken` field.                                                                                        |
+
+When BOTH params are present AND no roaming settings exist, the page **auto-saves** the values via `Office.context.roamingSettings.saveAsync()` immediately on `Office.onReady`, surfaces a "Connected ✓" status, and (best-effort) tries `Office.context.ui.messageParent` to close the pane programmatically. The user is then guided to close the pane manually if Office.js declines the close request — subsequent Capture clicks see saved settings and skip the configure flow entirely.
+
+When EITHER param is missing OR roaming settings already exist (the re-configure scenario), the page renders the legacy manual form (URL + token + Test + Save) so power users can re-point at a different server.
+
+**Cross-repo coordination:** the droplet's `GET /outlook-manifest.xml?token=<addinToken>` endpoint emits a manifest whose configurePane URL is `https://rosscantrell.github.io/apolla-outlook-addin/configure.html?tenant=<pilot>&token=<apolla_…>` — this URL is the load-bearing contract this file relies on. Both ends must agree.
+
+### Lifecycle event reporting
+
+Both `configure.html` and `functions.html` POST best-effort events to `<apolla-base>/api/auth/addin-lifecycle-event` so operators can debug "did Trisha's add-in ever phone home?" via a single `grep` on the server-side `addin-lifecycle-log.jsonl`. Events: `configure_loaded`, `configure_autosaved`, `capture_attempted`, `capture_succeeded`, `capture_failed`. Failures are silent (no UX impact); requires the bearer token to be set (it gets sent in the `Authorization` header).
+
+---
+
 ## Server-side prerequisite
 
 The Apolla schema-browser server must have CORS web-origin support (PR #174 in AI-Light-Prototype). Before pilot users can POST from `https://rosscantrell.github.io`:

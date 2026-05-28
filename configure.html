@@ -85,7 +85,14 @@
   <!-- WP-OCR-09 Phase D — pre-fill hint banner. Shown only when the
        page was opened via a droplet-hosted manifest URL carrying
        ?tenant + ?token query params. Hidden by default; the bootstrap
-       script reveals + populates it when params are detected. -->
+       script reveals + populates it when params are detected.
+
+       WP-Onboarding-One-Click v1.1 (P0-4): when auto-save fires we
+       replace the hint text in-place with "Connected ✓" so the
+       configure pane has a clear terminal state even if Office.js
+       won't let us close the dialog programmatically. The user can
+       close the pane manually; subsequent Capture clicks see saved
+       settings and skip the configure flow entirely. -->
   <div id="prefillHint" class="status ok" style="display:none; margin-top:0; margin-bottom:12px;">
     <strong>Pre-filled from your Apolla tenant.</strong> Click <strong>Test connection</strong> to verify, then <strong>Save</strong>.
   </div>
@@ -153,6 +160,31 @@
         }
       })();
 
+      // WP-Onboarding-One-Click v1.1 P2-8 — best-effort lifecycle event
+      // reporting back to the schema-browser. Fire-and-forget; failures
+      // are silent (no UX impact). Events: configure_loaded,
+      // configure_autosaved, capture_attempted/_succeeded/_failed (the
+      // capture-* events fire from functions.html).
+      function reportLifecycleEvent(eventType, baseUrl, token) {
+        try {
+          if (!baseUrl || !token) return;
+          fetch(baseUrl.replace(/\/+$/, '') + '/api/auth/addin-lifecycle-event', {
+            method: 'POST',
+            mode: 'cors',
+            keepalive: true,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify({
+              eventType: eventType,
+              surface: 'configure',
+              ts: new Date().toISOString()
+            })
+          }).catch(function () { /* silent */ });
+        } catch (_e) { /* silent */ }
+      }
+
       // Load existing settings on open
       Office.onReady(function () {
         var existingBase = Office.context.roamingSettings.get('apollaBaseUrl') || '';
@@ -186,9 +218,74 @@
               hint.innerHTML =
                 '<strong>Pre-filled from Apolla tenant ' +
                 escapeHtml(prefillFromUrl.tenant) +
-                '.</strong> Click <strong>Test connection</strong> to verify, then <strong>Save</strong>.';
+                '.</strong> Saving automatically — no action needed.';
             }
             hint.style.display = 'block';
+          }
+        }
+
+        // Fire configure_loaded for observability. Use whichever
+        // url/token is currently in the field (saved settings preferred,
+        // else URL-param pre-fill).
+        var lifecycleBase = (existingBase || ($base.value || '')).replace(/\/+$/, '');
+        var lifecycleToken = existingToken || $token.value || '';
+        reportLifecycleEvent('configure_loaded', lifecycleBase, lifecycleToken);
+
+        // WP-Onboarding-One-Click v1.1 P0-4 — auto-save-and-close when
+        // both URL params are present AND no roaming settings were
+        // previously saved. The user never sees the Save button click;
+        // the configure pane is effectively invisible.
+        //
+        // Guard: only fire when BOTH baseUrl + token came from URL
+        // params (not from existing roaming settings). The
+        // existingBase/existingToken precedence above ensures that a
+        // returning user who saved a different config doesn't get
+        // silently clobbered.
+        var shouldAutoSave =
+          prefillFromUrl &&
+          prefillFromUrl.baseUrl && prefillFromUrl.token &&
+          !existingBase && !existingToken;
+
+        if (shouldAutoSave) {
+          var baseUrl = ($base.value || '').trim().replace(/\/+$/, '');
+          var token = ($token.value || '').trim();
+          if (baseUrl && token) {
+            Office.context.roamingSettings.set('apollaBaseUrl', baseUrl);
+            Office.context.roamingSettings.set('apollaToken', token);
+            Office.context.roamingSettings.saveAsync(function (result) {
+              if (result.status === Office.AsyncResultStatus.Succeeded) {
+                showStatus('ok', 'Connected. You can now click Capture on any email — this pane will not reappear.');
+                // Disable the manual buttons; user can close the pane
+                // manually but doesn't need to take any action.
+                $save.disabled = true;
+                $save.textContent = 'Saved ✓';
+                var hint = document.getElementById('prefillHint');
+                if (hint && prefillFromUrl.tenant) {
+                  hint.innerHTML =
+                    '<strong>Connected to ' + escapeHtml(prefillFromUrl.tenant) +
+                    ' ✓</strong> Capture is ready. You can close this pane.';
+                }
+                // Best-effort attempts to close the configure surface.
+                // Office.context.ui.messageParent is only available when
+                // opened via displayDialogAsync (parent script can close
+                // via messageParent → closeDialog). The configure pane
+                // shipped here is sometimes rendered as a function-file
+                // popup which doesn't allow programmatic close.
+                // Fall through silently when the API is unavailable;
+                // the user reads the "Connected ✓" status and closes
+                // the pane manually.
+                try {
+                  if (Office.context && Office.context.ui && typeof Office.context.ui.messageParent === 'function') {
+                    Office.context.ui.messageParent(JSON.stringify({ event: 'apolla_configured' }));
+                  }
+                } catch (_e) { /* silent */ }
+                reportLifecycleEvent('configure_autosaved', baseUrl, token);
+              } else {
+                // Auto-save failed — fall back to the manual Save flow.
+                showStatus('warn', 'Auto-save failed — click Save to retry: ' +
+                  (result.error && result.error.message ? result.error.message : 'unknown error'));
+              }
+            });
           }
         }
       });
