@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Threshold — Staged outbox</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    :root { --ink:#1a1a1a; --muted:#6b6b6b; --line:#e3e3e3; --accent:#7a5cff; --accent-ink:#fff; --bg:#fff; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; color: var(--ink);
+           background: var(--bg); margin: 0; padding: 12px; font-size: 13px; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    h1 { font-size: 14px; margin: 0; font-weight: 600; }
+    .refresh { border: 1px solid var(--line); background: #fafafa; border-radius: 6px;
+               padding: 4px 8px; font-size: 12px; cursor: pointer; color: var(--ink); }
+    #status { font-size: 12px; color: var(--muted); margin: 6px 0; min-height: 16px; }
+    .item { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+    .type { display: inline-block; font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+            color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+    .subject { font-weight: 600; margin: 6px 0 2px; }
+    .meta { font-size: 11px; color: var(--muted); word-break: break-word; }
+    .source { font-size: 11px; color: var(--muted); margin-top: 4px; font-style: italic; }
+    .actions { margin-top: 8px; display: flex; gap: 6px; }
+    button.primary { background: var(--accent); color: var(--accent-ink); border: none; border-radius: 6px;
+                     padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
+                   border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    .empty { color: var(--muted); text-align: center; padding: 24px 8px; }
+    .hint { font-size: 11px; color: #b06a00; margin-top: 4px; }
+  </style>
+</head>
+<body>
+<!--
+  Threshold staged-outbox task pane (WP-Outlook-Writeback).
+
+  Reads the Threshold brain's staged outbound items from GET /api/outbox and
+  "brings forward" a chosen item into a pre-filled Outlook compose window the
+  user reviews + sends. Whole loop is no-admin: composition is done server-side
+  (no Microsoft Graph), and the send happens through the consent-free Office.js
+  display*Form surface (requirement set 1.1, ReadItem permission).
+
+  Config reuses the same roamingSettings the capture handler uses:
+    apollaToken   — bearer (apolla_... per-user token OR shared INGESTION_API_KEY)
+    apollaBaseUrl — Apolla server root
+-->
+<header>
+  <h1>Threshold — staged outbox</h1>
+  <button class="refresh" id="refresh">Refresh</button>
+</header>
+<div id="status"></div>
+<div id="list"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  function getToken()   { return Office.context.roamingSettings.get('apollaToken') || ''; }
+  function getBaseUrl() { return (Office.context.roamingSettings.get('apollaBaseUrl') || 'http://localhost:3001').replace(/\/+$/, ''); }
+
+  function setStatus(msg) { document.getElementById('status').textContent = msg || ''; }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function authHeaders() {
+    return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() };
+  }
+
+  // ── Load + render the queue ──
+
+  function loadQueue() {
+    var token = getToken();
+    var baseUrl = getBaseUrl();
+    if (!token) {
+      setStatus('Apolla not configured — run Configure to set your token.');
+      return;
+    }
+    setStatus('Loading staged items…');
+    fetch(baseUrl + '/api/outbox?status=pending', { method: 'GET', mode: 'cors', headers: authHeaders() })
+      .then(function (resp) {
+        if (resp.status === 401) { setStatus('Auth failed — re-run Configure to update your token.'); return null; }
+        if (!resp.ok) { setStatus('Apolla returned HTTP ' + resp.status + '.'); return null; }
+        return resp.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        render(data.items || []);
+      })
+      .catch(function (err) {
+        setStatus('Apolla unreachable at ' + baseUrl + ' (' + ((err && err.message) || err) + ').');
+      });
+  }
+
+  function typeLabel(t) {
+    return t === 'new-email' ? 'New email' : t === 'meeting-invite' ? 'Meeting invite' : 'Reply';
+  }
+
+  function render(items) {
+    var list = document.getElementById('list');
+    list.innerHTML = '';
+    if (!items.length) {
+      setStatus('');
+      list.innerHTML = '<div class="empty">No staged items.<br/>Threshold drops drafts and invites here for you to send.</div>';
+      return;
+    }
+    setStatus(items.length + ' staged item' + (items.length === 1 ? '' : 's'));
+    items.forEach(function (it) {
+      var card = document.createElement('div');
+      card.className = 'item';
+
+      var who = it.type === 'meeting-invite'
+        ? ((it.requiredAttendees || []).concat(it.optionalAttendees || []).join(', '))
+        : ((it.toRecipients || []).join(', '));
+      var when = (it.start ? '  •  ' + esc(it.start) : '');
+
+      var html = '<span class="type">' + esc(typeLabel(it.type)) + '</span>'
+        + '<div class="subject">' + esc(it.subject || '(no subject)') + '</div>'
+        + (who ? '<div class="meta">To: ' + esc(who) + esc(when) + '</div>' : '')
+        + (it.source && it.source.label ? '<div class="source">From: ' + esc(it.source.label) + '</div>' : '')
+        + '<div class="actions">'
+        + '  <button class="primary" data-act="forward">Bring forward</button>'
+        + '  <button class="ghost" data-act="dismiss">Dismiss</button>'
+        + '</div>';
+      card.innerHTML = html;
+
+      card.querySelector('[data-act="forward"]').addEventListener('click', function () { bringForward(it, card); });
+      card.querySelector('[data-act="dismiss"]').addEventListener('click', function () { decide(it.id, 'dismiss', card); });
+      list.appendChild(card);
+    });
+  }
+
+  // ── Bring forward: dispatch by type into a pre-filled compose window ──
+
+  function bringForward(it, card) {
+    var mbx = Office.context.mailbox;
+    try {
+      if (it.type === 'new-email') {
+        mbx.displayNewMessageForm({
+          toRecipients: it.toRecipients || [],
+          ccRecipients: it.ccRecipients || [],
+          subject: it.subject || '',
+          htmlBody: it.bodyHtml || ''
+        });
+        markSent(it.id, card);
+      } else if (it.type === 'meeting-invite') {
+        mbx.displayNewAppointmentForm({
+          requiredAttendees: it.requiredAttendees || [],
+          optionalAttendees: it.optionalAttendees || [],
+          start: it.start ? new Date(it.start) : undefined,
+          end: it.end ? new Date(it.end) : undefined,
+          subject: it.subject || '',
+          location: it.location || '',
+          body: it.bodyHtml || ''
+        });
+        markSent(it.id, card);
+      } else { // reply
+        var open = mbx.item;
+        var openId = open && open.internetMessageId ? open.internetMessageId : '';
+        if (it.originalInternetMessageId && openId && openId === it.originalInternetMessageId) {
+          // The original message is the open item — true threaded reply.
+          mbx.displayReplyForm({ htmlBody: it.bodyHtml || '' });
+          markSent(it.id, card);
+        } else if (it.toRecipients && it.toRecipients.length) {
+          // Can't thread (original not open) — degrade to a pre-addressed new
+          // email. Loses threading but sends from anywhere.
+          mbx.displayNewMessageForm({
+            toRecipients: it.toRecipients,
+            ccRecipients: it.ccRecipients || [],
+            subject: it.subject || '',
+            htmlBody: it.bodyHtml || ''
+          });
+          markSent(it.id, card);
+        } else {
+          // No way to thread and no fallback recipient — nudge the user.
+          var hint = card.querySelector('.hint') || document.createElement('div');
+          hint.className = 'hint';
+          hint.textContent = 'Open the original message to send this reply in-thread.';
+          if (!hint.parentNode) card.appendChild(hint);
+        }
+      }
+    } catch (err) {
+      setStatus('Could not open compose window: ' + ((err && err.message) || err));
+    }
+  }
+
+  function markSent(id, card)    { decide(id, 'sent', card); }
+
+  // ── Status mutation (sent / dismiss) ──
+
+  function decide(id, action, card) {
+    fetch(getBaseUrl() + '/api/outbox/' + encodeURIComponent(id) + '/' + action,
+          { method: 'POST', mode: 'cors', headers: authHeaders() })
+      .then(function (resp) {
+        if (resp.ok && card && card.parentNode) {
+          card.parentNode.removeChild(card);
+          var remaining = document.querySelectorAll('.item').length;
+          if (remaining === 0) render([]); else setStatus(remaining + ' staged item' + (remaining === 1 ? '' : 's'));
+        } else if (!resp.ok) {
+          setStatus('Update failed (HTTP ' + resp.status + ').');
+        }
+      })
+      .catch(function (err) { setStatus('Update failed: ' + ((err && err.message) || err)); });
+  }
+
+  Office.onReady(function () {
+    document.getElementById('refresh').addEventListener('click', loadQueue);
+    loadQueue();
+  });
+})();
+</script>
+</body>
+</html>

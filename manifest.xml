@@ -82,6 +82,25 @@
                       <SourceLocation resid="configurePane"/>
                     </Action>
                   </Control>
+                  <!-- WP-Outlook-Writeback: Threshold staged-outbox task pane.
+                       Shows brain-composed replies/emails/invites; "Bring
+                       forward" opens a pre-filled compose window (no-admin
+                       Office.js display*Form). -->
+                  <Control xsi:type="Button" id="apollaQueueBtn">
+                    <Label resid="queueLabel"/>
+                    <Supertip>
+                      <Title resid="queueLabel"/>
+                      <Description resid="queueDesc"/>
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="icon16"/>
+                      <bt:Image size="32" resid="icon32"/>
+                      <bt:Image size="80" resid="icon80"/>
+                    </Icon>
+                    <Action xsi:type="ShowTaskpane">
+                      <SourceLocation resid="queuePane"/>
+                    </Action>
+                  </Control>
                 </Group>
               </OfficeTab>
             </ExtensionPoint>
@@ -97,15 +116,18 @@
         <bt:Urls>
           <bt:Url id="functionFile" DefaultValue="https://rosscantrell.github.io/apolla-outlook-addin/functions.html"/>
           <bt:Url id="configurePane" DefaultValue="https://rosscantrell.github.io/apolla-outlook-addin/configure.html"/>
+          <bt:Url id="queuePane" DefaultValue="https://rosscantrell.github.io/apolla-outlook-addin/threshold-queue.html"/>
         </bt:Urls>
         <bt:ShortStrings>
           <bt:String id="groupLabel" DefaultValue="Apolla"/>
           <bt:String id="captureLabel" DefaultValue="Capture"/>
           <bt:String id="configureLabel" DefaultValue="Configure"/>
+          <bt:String id="queueLabel" DefaultValue="Threshold"/>
         </bt:ShortStrings>
         <bt:LongStrings>
           <bt:String id="captureDesc" DefaultValue="Capture this email to Viktora Apolla"/>
           <bt:String id="configureDesc" DefaultValue="Configure Apolla server URL and bearer token"/>
+          <bt:String id="queueDesc" DefaultValue="Open the Threshold staged outbox — send brain-composed replies, emails, and meeting invites"/>
         </bt:LongStrings>
       </Resources>
     </VersionOverrides>
