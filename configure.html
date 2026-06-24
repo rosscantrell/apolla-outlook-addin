@@ -190,27 +190,28 @@
         var existingBase = Office.context.roamingSettings.get('apollaBaseUrl') || '';
         var existingToken = Office.context.roamingSettings.get('apollaToken') || '';
 
-        // Precedence: existing saved settings ALWAYS win when present
-        // (the user explicitly Saved them). URL-param pre-fill ONLY
-        // applies to first-time installs (no saved settings yet).
-        if (existingBase) {
-          $base.value = existingBase;
-        } else if (prefillFromUrl && prefillFromUrl.baseUrl) {
+        // Precedence: when the manifest URL carries explicit tenant+token
+        // params, this is an explicit "use THIS workspace" install — those
+        // params WIN over any stale saved settings (override on re-install /
+        // workspace switch). Otherwise (manual-entry path, no URL params)
+        // existing saved settings win.
+        if (prefillFromUrl && prefillFromUrl.baseUrl) {
           $base.value = prefillFromUrl.baseUrl;
+        } else if (existingBase) {
+          $base.value = existingBase;
         }
-        if (existingToken) {
-          $token.value = existingToken;
-        } else if (prefillFromUrl && prefillFromUrl.token) {
+        if (prefillFromUrl && prefillFromUrl.token) {
           $token.value = prefillFromUrl.token;
+        } else if (existingToken) {
+          $token.value = existingToken;
         }
 
-        // Reveal the pre-fill hint banner iff we actually pre-filled
-        // from URL params AND nothing was already saved (avoid showing
-        // it to returning users who happened to re-open Configure from
-        // a freshly-loaded manifest copy).
+        // Reveal the pre-fill hint banner whenever we pre-filled from URL
+        // params. URL params now override saved settings, so the banner is
+        // accurate even for a re-install / workspace switch over an existing
+        // (now-overridden) config.
         var didPrefill =
-          prefillFromUrl &&
-          ((prefillFromUrl.baseUrl && !existingBase) || (prefillFromUrl.token && !existingToken));
+          prefillFromUrl && (prefillFromUrl.baseUrl || prefillFromUrl.token);
         if (didPrefill) {
           var hint = document.getElementById('prefillHint');
           if (hint) {
@@ -232,19 +233,18 @@
         reportLifecycleEvent('configure_loaded', lifecycleBase, lifecycleToken);
 
         // WP-Onboarding-One-Click v1.1 P0-4 — auto-save-and-close when
-        // both URL params are present AND no roaming settings were
-        // previously saved. The user never sees the Save button click;
-        // the configure pane is effectively invisible.
+        // both URL params are present. The user never sees the Save button
+        // click; the configure pane is effectively invisible.
         //
-        // Guard: only fire when BOTH baseUrl + token came from URL
-        // params (not from existing roaming settings). The
-        // existingBase/existingToken precedence above ensures that a
-        // returning user who saved a different config doesn't get
-        // silently clobbered.
+        // Override semantics: a manifest URL carrying both baseUrl + token
+        // is an explicit "use THIS workspace" install, so it OVERRIDES any
+        // stale prior roaming settings (re-install / workspace switch).
+        // Previously this skipped auto-save when settings already existed,
+        // which left a re-installed pre-configured manifest silently
+        // pointing at the old/wrong backend.
         var shouldAutoSave =
           prefillFromUrl &&
-          prefillFromUrl.baseUrl && prefillFromUrl.token &&
-          !existingBase && !existingToken;
+          prefillFromUrl.baseUrl && prefillFromUrl.token;
 
         if (shouldAutoSave) {
           var baseUrl = ($base.value || '').trim().replace(/\/+$/, '');
